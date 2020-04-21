@@ -9,154 +9,68 @@
 
 import shap
 import xgboost
-from xgboost import XGBRegressor
 from sklearn.model_selection import train_test_split
 import matplotlib.pylab as pl
 
 
-# ## Prepare Data
+# ## Create XGBoost data objects
 # 
 # This uses a pre-processed subset of NHANES I data available in the SHAP datasets module.
 
 X,y = shap.datasets.nhanesi()
 X_display,y_display = shap.datasets.nhanesi(display=True) # human readable feature values
 
+xgb_full = xgboost.DMatrix(X, label=y)
 
-# ## Vanilla XGBoost model
+# create a train/test split
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=7)
+xgb_train = xgboost.DMatrix(X_train, label=y_train)
+xgb_test = xgboost.DMatrix(X_test, label=y_test)
 
-fit_params = {
+
+# 
+# 
+# 
+# 
+# ## Train XGBoost model
+
+# use validation set to choose # of trees
+params = {
+    "eta": 0.002,
+    "max_depth": 3,
+    "objective": "survival:cox",
+    "subsample": 0.5
+}
+model_train = xgboost.train(params, xgb_train, 10000, evals = [(xgb_test, "test")], verbose_eval=1000)
+
+
+# train final model on the full data set
+params = {
     "eta": 0.002,
     "max_depth": 3, 
     "objective": "survival:cox",
-    "subsample": 0.5,
-    "n_estimators": 100,
-    "random_state": 34,
-    "seed": 34
+    "subsample": 0.5
 }
-orig_model = XGBRegressor(**fit_params)
-orig_model.fit(X_train, y_train, eval_set=[(X_test, y_test)], verbose=int(fit_params["n_estimators"]/5))
+model = xgboost.train(params, xgb_full, 5000, evals = [(xgb_full, "test")], verbose_eval=1000)
 
 
-# ## XGBoost model with SHAP feature importances
+# ## Check Performance
+# 
+# The C-statistic measures how well we can order people by their survival time (1.0 is a perfect ordering).
 
-import numpy as np
-import shap
-from xgboost import XGBRegressor
+def c_statistic_harrell(pred, labels):
+    total = 0
+    matches = 0
+    for i in range(len(labels)):
+        for j in range(len(labels)):
+            if labels[j] > 0 and abs(labels[i]) > labels[j]:
+                total += 1
+                if pred[j] > pred[i]:
+                    matches += 1
+    return matches/total
 
-
-class ShapXGBRegressor(XGBRegressor):
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-        self.vanilla_model = XGBRegressor(**kwargs)
-        self.feature_importances = None
-
-    @property
-    def feature_importances_(self):
-        return self.feature_importances
-    
-    @property
-    def vanilla_feature_importances(self):
-        return super().feature_importances_
-
-    def fit(self, X, y, **kwargs):
-        super().fit(X, y, **kwargs)
-        self.vanilla_model.__dict__ = self.__dict__
-        self._calculate_feature_importances(X)
-        return self
-
-    def _calculate_feature_importances(self, X):
-        explainer = shap.TreeExplainer(self.vanilla_model)
-        shap_values = explainer.shap_values(X)
-        feature_importances = np.mean(np.abs(shap_values), axis=0)
-        self.feature_importances = feature_importances
-
-    def get_params(self, deep=False):
-        return self.vanilla_model.get_params(deep)
-
-
-my_model = ShapXGBRegressor(**fit_params)
-my_model.fit(X_train, y_train, eval_set=[(X_test, y_test)], verbose=int(fit_params["n_estimators"]/5))
-
-
-# ## Compare feature importances
-
-(my_model.vanilla_feature_importances == orig_model.feature_importances_).all()
-
-
-orig_model.feature_importances_
-
-
-my_model.feature_importances_
-
-
-# ## Use models for feature selection
-
-from sklearn.impute import SimpleImputer
-
-def impute(df):
-    imputer = SimpleImputer(strategy='median')
-    df_imputed = df.copy()
-    df_imputed[:] = imputer.fit_transform(df)
-    return df_imputed    
-
-def impute_train_test(X_train, X_test):
-    imputer = SimpleImputer(strategy='median')
-    imputer.fit(X_train)
-    
-    X_train_imputed = X_train.copy()
-    X_train_imputed[:] = imputer.transform(X_train)
-    
-    X_test_imputed = X_test.copy()
-    X_test_imputed[:] = imputer.transform(X_test)
-    
-    return X_train_imputed, X_test_imputed
-
-X_train_imputed, X_test_imputed = impute_train_test(X_train, X_test)
-X_imputed = impute(X)
-
-
-from sklearn.feature_selection import RFE
-
-estimator = XGBRegressor(**fit_params)
-selector = RFE(estimator, n_features_to_select=5, step=1)
-selector = selector.fit(X_imputed, y)
-print(np.nonzero(selector.support_)[0])
-print(selector.support_)
-print(selector.ranking_)
-
-estimator = ShapXGBRegressor(**fit_params)
-selector = RFE(estimator, n_features_to_select=5, step=1)
-selector = selector.fit(X_imputed, y)
-print(np.nonzero(selector.support_)[0])
-print(selector.support_)
-print(selector.ranking_)
-
-
-np.argsort(orig_model.feature_importances_)[::-1]
-
-
-np.argsort(my_model.feature_importances_)[::-1]
-
-
-X.columns[np.nonzero(selector.support_)[0]]
-
-
-from sklearn.datasets import make_friedman1
-from sklearn.feature_selection import RFE
-from sklearn.svm import SVR
-X, y = make_friedman1(n_samples=50, n_features=10, random_state=0)
-estimator = ShapXGBRegressor(**params, random_state=34, seed=34)
-selector = RFE(estimator, 5, step=1)
-selector = selector.fit(X, y)
-print(selector.support_)
-print(selector.ranking_)
-
-X = X[:,::-1]
-estimator = ShapXGBRegressor(**params, random_state=34, seed=34)
-selector = RFE(estimator, 5, step=1)
-selector = selector.fit(X, y)
-print(selector.support_)
-print(selector.ranking_)
+# see how well we can order people by survival
+c_statistic_harrell(model_train.predict(xgb_test, ntree_limit=5000), y_test)
 
 
 # ## Explain the model's predictions on the entire dataset
@@ -186,7 +100,7 @@ shap.dependence_plot("Age", shap_values, X)
 
 
 # we pass display_features so we get text display values for sex
-shap.dependence_plot("Sex", shap_values, X)
+shap.dependence_plot("Sex", shap_values, X, display_features=X_display)
 
 
 # setting show=False allows us to continue customizing the matplotlib plot before displaying it

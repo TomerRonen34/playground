@@ -15,6 +15,8 @@ import shap
 import numpy as np
 import matplotlib.pylab as pl
 import pandas as pd
+from xgboost import XGBClassifier
+from sklearn.metrics import accuracy_score, f1_score
 
 # print the JS visualization code to the notebook
 shap.initjs()
@@ -31,26 +33,16 @@ d_train = xgboost.DMatrix(X_train, label=y_train)
 d_test = xgboost.DMatrix(X_test, label=y_test)
 
 
-# ## Train the model
-
-params = {
-    "eta": 0.01,
-    "objective": "binary:logistic",
-    "subsample": 0.5,
-    "base_score": np.mean(y_train),
-    "eval_metric": "logloss"
-}
-model = xgboost.train(params, d_train, 5000, evals = [(d_test, "test")], verbose_eval=100, early_stopping_rounds=20)
-
-
 # # Sklearn feature statistics
 
 from sklearn.feature_selection import chi2, f_classif, mutual_info_classif
 
-def calculate_feature_statistics(X, y):
+
+def calculate_multiple_feature_statistics(X, y):
     importance_df_list = []
     for stat_func in [f_classif, chi2, mutual_info_classif]:
-        _importance_df = calculate_specific_feature_statistics(stat_func, X, y)
+        _importance_df = calculate_feature_statistics(stat_func, X, y)
+        _importance_df = add_prefix_to_df_columns(_importance_df, stat_func.__name__)
         importance_df_list.append(_importance_df)
 
     importance_df = pd.concat(importance_df_list, axis="columns", sort=False)
@@ -58,10 +50,10 @@ def calculate_feature_statistics(X, y):
     
     return importance_df
 
-def calculate_specific_feature_statistics(stat_func, X, y):
-    feature_names = tuple(X.columns)
 
-    statistic_name = stat_func.__name__
+def calculate_feature_statistics(stat_func, X, y):
+    feature_names = tuple(X.columns)
+    
     stat_results = stat_func(X, y)
 
     p_values = None
@@ -70,25 +62,28 @@ def calculate_specific_feature_statistics(stat_func, X, y):
     else:
         importance_statistic = stat_results
 
-    _importance_df = organize_feature_importances(importance_statistic, feature_names, statistic_name)
+    importance_df = organize_feature_importances(importance_statistic, feature_names)
 
     if p_values is not None:
-        _importance_df = append_p_values(_importance_df, p_values, statistic_name)
+        importance_df = append_p_values(importance_df, p_values)
     
-    return _importance_df
+    return importance_df
 
-def organize_feature_importances(statistic, feature_names, statistic_name):  
-    stat_column = statistic_name + "_stat"
+
+def organize_feature_importances(statistic, feature_names):  
+    stat_column = "stat"
     df = pd.DataFrame(zip(feature_names, statistic), columns=["feature_name", stat_column])
     df = df.sort_values(by=stat_column, ascending=False)
     df = df.set_index("feature_name")
-    df[statistic_name + "_rank"] = range(1, len(df) + 1)
+    df["rank"] = range(1, len(df) + 1)
     return df
 
-def append_p_values(importance_df, p_values, statistic_name):
+
+def append_p_values(importance_df, p_values):
     importance_df = importance_df.copy()
-    importance_df[statistic_name + "_p_values"] = p_values
+    importance_df["p_values"] = p_values
     return importance_df
+
 
 def order_df_columns_by_type(df, columns_types):
     columns = pd.Series(df.columns)
@@ -99,15 +94,122 @@ def order_df_columns_by_type(df, columns_types):
     df = df[ordered_columns]
     return df
 
-importance_df = calculate_feature_statistics(X, y)
+
+def add_prefix_to_df_columns(df, prefix):
+    df = df.copy()
+    prefixed_columns = [prefix + '_' + col for col in df.columns]
+    df.columns = prefixed_columns
+    return df
+    
+
+importance_df = calculate_multiple_feature_statistics(X, y)
 importance_df
 
 
-top_k = 5
-for stat_func in [f_classif, chi2, mutual_info_classif]:
-    statistic_name = stat_func.__name__
-    feature_ranks = importance_df[statistic_name + "_rank"]
-    feature_names = feature_ranks.sort_values().index.tolist()[:top_k]
+# # XGBoost based importances
+
+def xgboost_univariate_performance(X_trainval, y_trainval, metric="f1_macro"):
+    X_train, X_val, y_train, y_val = train_test_split(X_trainval, y_trainval, test_size=0.2, random_state=34)
+    feature_names = X_train.columns
+    performance = []
+    for feature_name in feature_names:
+        X_train_univariate = X_train[[feature_name]]
+        X_val_univariate = X_val[[feature_name]]
+        accuracy, f1 = fit_and_eval_classifier(X_train_univariate, y_train, X_val_univariate, y_val, n_estimators=50)
+        if metric == "f1_macro":
+            _performance = f1
+        else:
+            _performance = accuracy
+        performance.append(_performance)
+    return performance
+
+
+def xgboost_default_feature_importance(X, y):
+    estimator = fit_classifier(X, y)
+    feature_importances = estimator.feature_importances_
+    return feature_importances
+
+
+def xgboost_SHAP_importance(X, y):
+    estimator = fit_classifier(X, y)
+    explainer = shap.TreeExplainer(estimator)
+    shap_values = explainer.shap_values(X)
+    feature_importances = np.mean(np.abs(shap_values), axis=0)
+    return feature_importances
+
+
+def fit_and_eval_classifier(X_train, y_train, X_test, y_test, n_estimators=200):
+    estimator = fit_classifier(X_train, y_train, n_estimators)
+    accuracy, f1 = eval_classifier(estimator, X_test, y_test)
+    return accuracy, f1
+
+
+def fit_classifier(X, y, n_estimators=200):
+    fit_params = {
+        "eta": 0.01,
+        "objective": "binary:logistic",
+        "subsample": 0.5,
+        "base_score": np.mean(y),
+        "eval_metric": "logloss",
+        "n_estimators": n_estimators,
+        "seed": 34,
+        "random_state": 34
+    }
+    estimator = XGBClassifier(**fit_params)
+    estimator.fit(X, y)
+    return estimator
+
+
+def eval_classifier(estimator, X, y):
+    pred_labels = estimator.predict(X)
+    accuracy = accuracy_score(pred_labels, y)
+    f1 = f1_score(pred_labels, y, average="macro")
+    return accuracy, f1
+
+
+# # Compare methods
+
+accuracy_full, f1_full = fit_and_eval_classifier(X_train, y_train, X_test, y_test)
+
+
+results_columns = ["method", "top_k_features", "f1_macro", "accuracy"]
+results_rows = []
+results_rows.append(("no selection", X.shape[1], f1_full, accuracy_full))
+for stat_func in [xgboost_SHAP_importance, xgboost_default_feature_importance,
+                  xgboost_univariate_performance, f_classif, chi2, mutual_info_classif]:
+    importance_df = calculate_feature_statistics(stat_func, X_train, y_train)
+    feature_names_by_importance = importance_df["rank"].sort_values().index.tolist()
+    for top_k in [2, 5]:
+        print(stat_func.__name__, top_k)
+        selected_features = feature_names_by_importance[:top_k]
+        X_train_selected = X_train[selected_features]
+        X_test_selected = X_test[selected_features]
+        accuracy, f1 = fit_and_eval_classifier(X_train_selected, y_train, X_test_selected, y_test)
+        results_rows.append((stat_func.__name__, top_k, f1, accuracy))
+results = pd.DataFrame(results_rows, columns=results_columns)
+results = results.sort_values(by="f1_macro", ascending=False)
+results.index = range(1, len(results) + 1)
+results
+
+
+# # .
+# # .
+# # .
+# # STUFF FROM THE ORIGINAL NOTEBOOK
+
+raise Exception("stop here")
+
+
+# ## Train the model
+
+params = {
+    "eta": 0.01,
+    "objective": "binary:logistic",
+    "subsample": 0.5,
+    "base_score": np.mean(y_train),
+    "eval_metric": "logloss"
+}
+model = xgboost.train(params, d_train, 5000, evals = [(d_test, "test")], verbose_eval=100, early_stopping_rounds=20)
 
 
 # ## Classic feature attributions

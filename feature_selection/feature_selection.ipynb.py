@@ -1,13 +1,11 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-# # Census income classification with XGBoost
+# # Exploration of differnt feature selection methods
+# ### Based on "Census income classification with XGBoost" from the SHAP repository
 # 
-# This notebook demonstrates how to use XGBoost to predict the probability of an individual making over $50K a year in annual income. It uses the standard UCI Adult income dataset. To download a copy of this notebook visit [github](https://github.com/slundberg/shap/tree/master/notebooks).
-# 
-# Gradient boosting machine methods such as XGBoost are state-of-the-art for these types of prediction problems with tabular style input data of many modalities. Tree SHAP ([arXiv paper](https://arxiv.org/abs/1802.03888)) allows for the exact computation of SHAP values for tree ensemble methods, and has been integrated directly into the C++ XGBoost code base. This allows fast exact computation of SHAP values without sampling and without providing a background dataset (since the background is inferred from the coverage of the trees).
-# 
-# Here we demonstrate how to use SHAP values to understand XGBoost model predictions. 
+# Use xgboost version 0.9, otherwise you might get an error when using RFE feature selector:  
+# pip install --upgrade xgboost==0.90
 
 from sklearn.model_selection import train_test_split
 import xgboost
@@ -17,6 +15,7 @@ import matplotlib.pylab as pl
 import pandas as pd
 from xgboost import XGBClassifier
 from sklearn.metrics import accuracy_score, f1_score
+from functools import partial
 
 # print the JS visualization code to the notebook
 shap.initjs()
@@ -34,13 +33,27 @@ d_test = xgboost.DMatrix(X_test, label=y_test)
 
 
 # # Sklearn feature statistics
+# ### Use methods that estimate the statistical dependence between each feature (individually) and the target variable.
+# 
+# **chi2** - chi2 statistical test  
+# https://scikit-learn.org/stable/modules/generated/sklearn.feature_selection.chi2.html
+# 
+# **mutual_info_classif** - estimation of the mutual information  
+# https://scikit-learn.org/stable/modules/generated/sklearn.feature_selection.mutual_info_classif.html  
+# 
+# **f_classif** - ANOVA (analysis of variance)  
+# https://scikit-learn.org/stable/modules/generated/sklearn.feature_selection.f_classif.html  
+# Compares the differences between the mean value of the feature for each class, weighted by the variance of the feature inside each class.  
+# I read a really good explanation that I can't find right now... This one is OK I guess:  
+# https://towardsdatascience.com/anova-for-feature-selection-in-machine-learning-d9305e228476
+# <img src="anova 75.png">
 
 from sklearn.feature_selection import chi2, f_classif, mutual_info_classif
 
 
-def calculate_multiple_feature_statistics(X, y):
+def calculate_multiple_feature_statistics(X, y, stat_functions):
     importance_df_list = []
-    for stat_func in [f_classif, chi2, mutual_info_classif]:
+    for stat_func in stat_functions:
         _importance_df = calculate_feature_statistics(stat_func, X, y)
         _importance_df = add_prefix_to_df_columns(_importance_df, stat_func.__name__)
         importance_df_list.append(_importance_df)
@@ -102,11 +115,34 @@ def add_prefix_to_df_columns(df, prefix):
     return df
     
 
-importance_df = calculate_multiple_feature_statistics(X, y)
+stat_functions = [f_classif, chi2, mutual_info_classif]
+importance_df = calculate_multiple_feature_statistics(X, y, stat_functions)
 importance_df
 
 
-# # XGBoost based importances
+# # Using XGBoost to assign an importance value to each feature
+# 
+# **Using single-model feature importance**  
+# Train a single XGBoost model using all features, calculate feature importances, and choose the most important features.  
+# Supports both default xgboost feature importances and SHAP feature importances.
+# 
+# **Using univariate performance**  
+# Split the train data into train and valiadtion, and train a different XGBoost model for each feature individually.  
+# The estimated importance of the feature is the performance of its univariate model on the valiadtion set.
+
+def xgboost_default_feature_importance(X, y):
+    estimator = fit_classifier(X, y)
+    feature_importances = estimator.feature_importances_
+    return feature_importances
+
+
+def xgboost_SHAP_importance(X, y):
+    estimator = fit_classifier(X, y)
+    explainer = shap.TreeExplainer(estimator)
+    shap_values = explainer.shap_values(X)
+    feature_importances = np.mean(np.abs(shap_values), axis=0)
+    return feature_importances
+
 
 def xgboost_univariate_performance(X_trainval, y_trainval, metric="f1_macro"):
     X_train, X_val, y_train, y_val = train_test_split(X_trainval, y_trainval, test_size=0.2, random_state=34)
@@ -122,20 +158,6 @@ def xgboost_univariate_performance(X_trainval, y_trainval, metric="f1_macro"):
             _performance = accuracy
         performance.append(_performance)
     return performance
-
-
-def xgboost_default_feature_importance(X, y):
-    estimator = fit_classifier(X, y)
-    feature_importances = estimator.feature_importances_
-    return feature_importances
-
-
-def xgboost_SHAP_importance(X, y):
-    estimator = fit_classifier(X, y)
-    explainer = shap.TreeExplainer(estimator)
-    shap_values = explainer.shap_values(X)
-    feature_importances = np.mean(np.abs(shap_values), axis=0)
-    return feature_importances
 
 
 def fit_and_eval_classifier(X_train, y_train, X_test, y_test, n_estimators=200):
@@ -167,202 +189,134 @@ def eval_classifier(estimator, X, y):
     return accuracy, f1
 
 
-# # Compare methods
-
-accuracy_full, f1_full = fit_and_eval_classifier(X_train, y_train, X_test, y_test)
-
-
-results_columns = ["method", "top_k_features", "f1_macro", "accuracy"]
-results_rows = []
-results_rows.append(("no selection", X.shape[1], f1_full, accuracy_full))
-for stat_func in [xgboost_SHAP_importance, xgboost_default_feature_importance,
-                  xgboost_univariate_performance, f_classif, chi2, mutual_info_classif]:
-    importance_df = calculate_feature_statistics(stat_func, X_train, y_train)
-    feature_names_by_importance = importance_df["rank"].sort_values().index.tolist()
-    for top_k in [2, 5]:
-        print(stat_func.__name__, top_k)
-        selected_features = feature_names_by_importance[:top_k]
-        X_train_selected = X_train[selected_features]
-        X_test_selected = X_test[selected_features]
-        accuracy, f1 = fit_and_eval_classifier(X_train_selected, y_train, X_test_selected, y_test)
-        results_rows.append((stat_func.__name__, top_k, f1, accuracy))
-results = pd.DataFrame(results_rows, columns=results_columns)
-results = results.sort_values(by="f1_macro", ascending=False)
-results.index = range(1, len(results) + 1)
-results
+stat_functions = [xgboost_default_feature_importance, xgboost_SHAP_importance, xgboost_univariate_performance]
+importance_df = calculate_multiple_feature_statistics(X, y, stat_functions)
+importance_df
 
 
-# # .
-# # .
-# # .
-# # STUFF FROM THE ORIGINAL NOTEBOOK
+# # RFE - Recursive method based on feature importances
+# https://scikit-learn.org/stable/modules/generated/sklearn.feature_selection.RFE.html
+# 
+# A method similar to Sequential Feature Selection (but not quite the same).  
+# Starting with all the features, this method trains a model and calculate feature importances. Then, the least important feature is eliminated, and the method continues to train models on smaller and smaller subsets of features, until it reaches the desired amount.
+# 
+# Since sklearn's RFE implementation uses the model's "feature_importances_" property, a variant of XGBClassifier is implemented to provide in-class support of SHAP importances.
+# 
+# A version of this method that uses cross-validation also exists (RFECV) but not used in this notebook.
 
-raise Exception("stop here")
+import numpy as np
+import shap
+from xgboost import XGBClassifier
 
 
-# ## Train the model
+class ShapXGBClassifier(XGBClassifier):
+    """
+    A version of XGBClassifier that uses SHAP feature importances
+    """
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.vanilla_model = XGBClassifier(**kwargs)
+        self.feature_importances = None
 
-params = {
+    @property
+    def feature_importances_(self):
+        return self.feature_importances
+    
+    @property
+    def vanilla_feature_importances(self):
+        return super().feature_importances_
+
+    def fit(self, X, y, **kwargs):
+        super().fit(X, y, **kwargs)
+        self.vanilla_model.__dict__ = self.__dict__
+        self._calculate_feature_importances(X)
+        return self
+
+    def _calculate_feature_importances(self, X):
+        explainer = shap.TreeExplainer(self.vanilla_model)
+        shap_values = explainer.shap_values(X)
+        feature_importances = np.mean(np.abs(shap_values), axis=0)
+        self.feature_importances = feature_importances
+
+    def get_params(self, deep=False):
+        return self.vanilla_model.get_params(deep)
+
+
+from sklearn.feature_selection import RFE
+
+def select_features_with_RFE(estimator, X, y, top_k):
+    feature_names = X.columns.values
+    selector = RFE(estimator, n_features_to_select=top_k, step=1)
+    selector = selector.fit(X, y)
+    selected_features_inds = np.nonzero(selector.support_)[0]
+    selected_features = feature_names[selected_features_inds]
+    return selected_features
+
+
+RFE_fit_params = {
     "eta": 0.01,
     "objective": "binary:logistic",
     "subsample": 0.5,
-    "base_score": np.mean(y_train),
-    "eval_metric": "logloss"
+    "base_score": np.mean(y),
+    "eval_metric": "logloss",
+    "n_estimators": 50,
+    "seed": 34,
+    "random_state": 34
 }
-model = xgboost.train(params, d_train, 5000, evals = [(d_test, "test")], verbose_eval=100, early_stopping_rounds=20)
+
+selected_features = select_features_with_RFE(estimator=XGBClassifier(**RFE_fit_params), X=X_train, y=y_train, top_k=2)
+print("RFE with default xgboost importances:", selected_features)
+
+selected_features = select_features_with_RFE(estimator=ShapXGBClassifier(**RFE_fit_params), X=X_train, y=y_train, top_k=2)
+print("RFE with SHAP importances:", selected_features)
 
 
-# ## Classic feature attributions
-# 
-# Here we try out the global feature importance calcuations that come with XGBoost. Note that they all contradict each other, which motivates the use of SHAP values since they come with consistency gaurentees (meaning they will order the features correctly).
+# # Compare methods
+# ### # TODO: Add sequential feature selection from mlxtend (forward and backward)
 
-xgboost.plot_importance(model)
-pl.title("xgboost.plot_importance(model)")
-pl.show()
-
-
-xgboost.plot_importance(model, importance_type="cover")
-pl.title('xgboost.plot_importance(model, importance_type="cover")')
-pl.show()
+def bulk_choose_features(X, y, stat_func, top_k):
+    importance_df = calculate_feature_statistics(stat_func, X_train, y_train)
+    feature_names_by_importance = importance_df["rank"].sort_values().index.tolist()
+    selected_features = feature_names_by_importance[:top_k]
+    return selected_features
 
 
-xgboost.plot_importance(model, importance_type="gain")
-pl.title('xgboost.plot_importance(model, importance_type="gain")')
-pl.show()
+def compare_methods(X_train, y_train, X_test, y_test):
+    print("\n\n")
+    print("compare_methods")
+    print("===============")
+    print("full model")
+    accuracy_full, f1_full = fit_and_eval_classifier(X_train, y_train, X_test, y_test)
+    results_columns = ["method", "top_k_features", "f1_macro", "accuracy", "selected_features"]
+    results_rows = []
+    results_rows.append(("no selection", X.shape[1], f1_full, accuracy_full, ["all features"]))
+    
+    bulk_stat_functions = [xgboost_SHAP_importance, xgboost_default_feature_importance,
+                      xgboost_univariate_performance, f_classif, chi2, mutual_info_classif]
+    bulk_names = [stat_func.__name__ for stat_func in bulk_stat_functions]
+    bulk_choice_functions = [partial(bulk_choose_features, stat_func=stat_func) for stat_func in bulk_stat_functions]
+    
+    RFE_names = ["RFE with default xgboost importances", "RFE with SHAP importances"]
+    RFE_estimators = [XGBClassifier(**RFE_fit_params), ShapXGBClassifier(**RFE_fit_params)]
+    RFE_choice_functions = [partial(select_features_with_RFE, estimator=estimator) for estimator in RFE_estimators]
+    
+    method_names =  RFE_names + bulk_names
+    choice_functions = RFE_choice_functions + bulk_choice_functions
+    
+    for method_name, choice_function in zip(method_names, choice_functions):
+        for top_k in [2, 5]:
+            print(method_name, top_k)
+            selected_features = choice_function(X=X_train, y=y_train, top_k=top_k)
+            X_train_selected = X_train[selected_features]
+            X_test_selected = X_test[selected_features]
+            accuracy, f1 = fit_and_eval_classifier(X_train_selected, y_train, X_test_selected, y_test)
+            results_rows.append((method_name, top_k, f1, accuracy, selected_features))
+    results = pd.DataFrame(results_rows, columns=results_columns)
+    results = results.sort_values(by="f1_macro", ascending=False)
+    results.index = range(1, len(results) + 1)
+    return results
 
 
-# ## Explain predictions
-# 
-# Here we use the Tree SHAP implementation integrated into XGBoost to explain the entire dataset (32561 samples).
-
-# this takes a minute or two since we are explaining over 30 thousand samples in a model with over a thousand trees
-explainer = shap.TreeExplainer(model)
-shap_values = explainer.shap_values(X)
-
-
-# ### Visualize a single prediction
-# 
-# Note that we use the "display values" data frame so we get nice strings instead of category codes. 
-
-shap.force_plot(explainer.expected_value, shap_values[0,:], X_display.iloc[0,:])
-
-
-# ### Visualize many predictions
-# 
-# To keep the browser happy we only visualize 1,000 individuals.
-
-shap.force_plot(explainer.expected_value, shap_values[:1000,:], X_display.iloc[:1000,:])
-
-
-# ## Bar chart of mean importance
-# 
-# This takes the average of the SHAP value magnitudes across the dataset and plots it as a simple bar chart.
-
-shap.summary_plot(shap_values, X_display, plot_type="bar")
-
-
-# ## SHAP Summary Plot
-# 
-# Rather than use a typical feature importance bar chart, we use a density scatter plot of SHAP values for each feature to identify how much impact each feature has on the model output for individuals in the validation dataset. Features are sorted by the sum of the SHAP value magnitudes across all samples. It is interesting to note that the relationship feature has more total model impact than the captial gain feature, but for those samples where capital gain matters it has more impact than age. In other words, capital gain effects a few predictions by a large amount, while age effects all predictions by a smaller amount.
-# 
-# Note that when the scatter points don't fit on a line they pile up to show density, and the color of each point represents the feature value of that individual.
-
-shap.summary_plot(shap_values, X)
-
-
-# ## SHAP Dependence Plots
-# 
-# SHAP dependence plots show the effect of a single feature across the whole dataset. They plot a feature's value vs. the SHAP value of that feature across many samples. SHAP dependence plots are similar to partial dependence plots, but account for the interaction effects present in the features, and are only defined in regions of the input space supported by data. The vertical dispersion of SHAP values at a single feature value is driven by interaction effects, and another feature is chosen for coloring to highlight possible interactions.
-
-for name in X_train.columns:
-    shap.dependence_plot(name, shap_values, X, display_features=X_display)
-
-
-# ## Simple supervised clustering
-# 
-# Clustering people by their shap_values leads to groups relevent to the prediction task at hand (their earning potential in this case).
-
-from sklearn.decomposition import PCA
-from sklearn.manifold import TSNE
-
-shap_pca50 = PCA(n_components=12).fit_transform(shap_values[:1000,:])
-shap_embedded = TSNE(n_components=2, perplexity=50).fit_transform(shap_values[:1000,:])
-
-
-import matplotlib
-from matplotlib.colors import LinearSegmentedColormap
-from matplotlib.ticker import MaxNLocator
-cdict1 = {
-    'red': ((0.0, 0.11764705882352941, 0.11764705882352941),
-            (1.0, 0.9607843137254902, 0.9607843137254902)),
-
-    'green': ((0.0, 0.5333333333333333, 0.5333333333333333),
-              (1.0, 0.15294117647058825, 0.15294117647058825)),
-
-    'blue': ((0.0, 0.8980392156862745, 0.8980392156862745),
-             (1.0, 0.3411764705882353, 0.3411764705882353)),
-
-    'alpha': ((0.0, 1, 1),
-              (0.5, 1, 1),
-              (1.0, 1, 1))
-}  # #1E88E5 -> #ff0052
-red_blue_solid = LinearSegmentedColormap('RedBlue', cdict1)
-
-
-f = pl.figure(figsize=(5,5))
-pl.scatter(shap_embedded[:,0],
-           shap_embedded[:,1],
-           c=shap_values[:1000,:].sum(1).astype(np.float64),
-           linewidth=0, alpha=1., cmap=red_blue_solid)
-cb = pl.colorbar(label="Log odds of making > $50K", aspect=40, orientation="horizontal")
-cb.set_alpha(1)
-cb.draw_all()
-cb.outline.set_linewidth(0)
-cb.ax.tick_params('x', length=0)
-cb.ax.xaxis.set_label_position('top')
-pl.gca().axis("off")
-pl.show()
-
-
-for feature in ["Relationship", "Capital Gain", "Capital Loss"]:
-    f = pl.figure(figsize=(5,5))
-    pl.scatter(shap_embedded[:,0],
-               shap_embedded[:,1],
-               c=X[feature].values[:1000].astype(np.float64),
-               linewidth=0, alpha=1., cmap=red_blue_solid)
-    cb = pl.colorbar(label=feature, aspect=40, orientation="horizontal")
-    cb.set_alpha(1)
-    cb.draw_all()
-    cb.outline.set_linewidth(0)
-    cb.ax.tick_params('x', length=0)
-    cb.ax.xaxis.set_label_position('top')
-    pl.gca().axis("off")
-    pl.show()
-
-
-# ### Train a model with only two leaves per tree and hence no interaction terms between features
-# 
-# Forcing the model to have no interaction terms means the effect of a feature on the outcome does not depend on the value of any other feature. This is reflected in the SHAP dependence plots below as no vertical spread. A vertical spread reflects that a single value of a feature can have different effects on the model output depending on the context of the other features present for an individual. However, for models without interaction terms, a feature always has the same impact regardless of what other attributes an individual may have.
-# 
-# One the benefits of SHAP dependence plots over traditional partial dependence plots is this ability to distigush between between models with and without interaction terms. In other words, SHAP dependence plots give an idea of the magnitude of the interaction terms through the vertical variance of the scatter plot at a given feature value.
-
-# train final model on the full data set
-params = {
-    "eta": 0.05,
-    "max_depth": 1,
-    "objective": "binary:logistic",
-    "subsample": 0.5,
-    "base_score": np.mean(y_train),
-    "eval_metric": "logloss"
-}
-model_ind = xgboost.train(params, d_train, 5000, evals = [(d_test, "test")], verbose_eval=100, early_stopping_rounds=20)
-
-
-shap_values_ind = shap.TreeExplainer(model_ind).shap_values(X)
-
-
-# Note that the interaction color bars below are meaningless for this model because it has no interactions.
-
-for name in X_train.columns:
-    shap.dependence_plot(name, shap_values_ind, X, display_features=X_display)
+results = compare_methods(X_train, y_train, X_test, y_test)
+results
 

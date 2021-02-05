@@ -1,6 +1,7 @@
 # My ignores
 .ipynb_checkpoints
 .idea
+model_to_product/txt_sentoken
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

@@ -1,30 +1,10 @@
-from typing import Callable, Tuple, Sequence, List
-
 import numpy as np
 import torch
 from torch import Tensor
 from torch.nn import BCEWithLogitsLoss, MSELoss
 
-
-class LoglossObjective:
-    def calc_ders_range(self, approxes, targets, weights=None):
-        assert len(approxes) == len(targets)
-        if weights is not None:
-            assert len(weights) == len(approxes)
-
-        result = []
-        for index in range(len(targets)):
-            e = np.exp(approxes[index])
-            p = e / (1 + e)
-            der1 = targets[index] - p
-            der2 = -p * (1 - p)
-
-            if weights is not None:
-                der1 *= weights[index]
-                der2 *= weights[index]
-
-            result.append((der1, der2))
-        return result
+from pytorch_catboost.custom_pytorch_objective import CustomPytorchObjective
+from pytorch_catboost.patbas_objectives import PatbasLoglossObjective, PatbasMseObjective
 
 
 class LoglossPytorchExplicit:
@@ -67,43 +47,6 @@ class LoglossPytorchAutograd:
         return result
 
 
-class CustomPytorchObjective:
-    def __init__(self, loss_function: Callable[[Tensor, Tensor], Tensor]):
-        self.loss_function = loss_function
-
-    def calc_ders_range(self,
-                        approxes: Sequence[float],
-                        targets: Sequence[float],
-                        weights: Sequence[float] = None
-                        ) -> List[Tuple[float, float]]:
-        approxes = torch.FloatTensor(approxes).requires_grad_()
-        targets = torch.FloatTensor(targets)
-
-        objective = - self.loss_function(approxes, targets)
-        der1, der2 = self._calculate_derivatives(objective, approxes)
-
-        if weights is not None:
-            weights = np.asarray(weights)
-            der1, der2 = weights * der1, weights * der2
-
-        result = list(zip(der1, der2))
-        return result
-
-    @staticmethod
-    def _calculate_derivatives(objective: Tensor, approxes: Tensor) -> Tuple[np.ndarray, np.ndarray]:
-        der1, = torch.autograd.grad(objective, approxes, create_graph=True)
-
-        der2 = []
-        for i in range(len(approxes)):
-            _der2, = torch.autograd.grad(der1[i], approxes, create_graph=True)
-            _der2_i = _der2[i].item()
-            der2.append(_der2_i)
-
-        der1 = der1.detach().numpy()
-        der2 = np.array(der2)
-        return der1, der2
-
-
 def logloss(approxes: Tensor, targets: Tensor) -> Tensor:
     e = torch.exp(approxes)
     p = e / (1 + e)
@@ -128,7 +71,7 @@ def compare_methods_logloss():
     # weights = np.random.rand(n)
     weights = None
 
-    result_patbas = LoglossObjective().calc_ders_range(approxes, targets, weights)
+    result_patbas = PatbasLoglossObjective().calc_ders_range(approxes, targets, weights)
     result_pytorch_explicit = LoglossPytorchExplicit().calc_ders_range(approxes, targets, weights)
     result_pytorch_autograd = LoglossPytorchAutograd().calc_ders_range(approxes, targets, weights)
     result_custom_pytorch = CustomPytorchObjective(loss_function=logloss).calc_ders_range(approxes, targets, weights)
@@ -151,25 +94,6 @@ def compare_methods_logloss():
     print(np.allclose(result_patbas, result_custom_pytorch_minus_builtin, rtol=1e-4))
 
     breakhere = 1
-
-
-class RmseObjective(object):
-    def calc_ders_range(self, approxes, targets, weights):
-        assert len(approxes) == len(targets)
-        if weights is not None:
-            assert len(weights) == len(approxes)
-
-        result = []
-        for index in range(len(targets)):
-            der1 = targets[index] - approxes[index]
-            der2 = -1
-
-            if weights is not None:
-                der1 *= weights[index]
-                der2 *= weights[index]
-
-            result.append((der1, der2))
-        return result
 
 
 def rmse_loss(approxes, targets):
@@ -195,17 +119,13 @@ def margin_dml_loss(approxes: Tensor, targets: Tensor, margin: float = 100) -> T
     return loss
 
 
-def predict_basic_dml(preds: np.ndarray) -> np.ndarray:
-    pass
-
-
 def compare_methods_rmse():
     n = 100
     approxes = np.random.randn(n)
     targets = np.random.randint(low=0, high=2, size=n)
     weights = None
 
-    result_patbas = RmseObjective().calc_ders_range(approxes, targets, weights)
+    result_patbas = PatbasMseObjective().calc_ders_range(approxes, targets, weights)
     result_custom_pytorch2 = CustomPytorchObjective(loss_function=rmse_loss
                                                     ).calc_ders_range(approxes, targets, weights)
 

@@ -6,8 +6,10 @@ from torch.nn import BCEWithLogitsLoss
 import matplotlib.pyplot as plt
 import numpy as np
 
-from pytorch_catboost.pytorch_second_derivative import LoglossObjective, CustomPytorchObjective, minus_bce_loss, \
+from pytorch_catboost.pytorch_second_derivative import minus_bce_loss, \
     basic_dml_loss, margin_dml_loss
+from pytorch_catboost.patbas_objectives import PatbasLoglossObjective
+from pytorch_catboost.custom_pytorch_objective import CustomPytorchObjective
 
 X, y = load_breast_cancer(return_X_y=True)
 X_train, X_test, y_train, y_test = train_test_split(X, y)

@@ -1,4 +1,4 @@
-from typing import List, Tuple, Union
+from typing import List, Tuple, Union, Callable
 
 import numpy as np
 import numpy.random as npr
@@ -6,7 +6,7 @@ import pytest
 from torch import Tensor
 from torch.nn import BCEWithLogitsLoss, MSELoss
 
-from pytorch_catboost.custom_pytorch_objective import LossFunctionType, CustomPytorchObjective
+from pytorch_catboost.custom_pytorch_objective import CustomPytorchObjective
 from pytorch_catboost.patbas_objectives import PatbasLoglossObjective, PatbasMseObjective
 
 
@@ -59,7 +59,7 @@ class TestCustomPytorchObjective:
                              targets: np.ndarray,
                              weights: Union[np.ndarray, None],
                              patbas_objective: Union[PatbasLoglossObjective, PatbasMseObjective],
-                             pytorch_loss_func: LossFunctionType):
+                             pytorch_loss_func: Callable[[Tensor, Tensor], Tensor]):
         custom_pytorch_objective = CustomPytorchObjective(pytorch_loss_func)
         result_pytorch = custom_pytorch_objective.calc_ders_range(approxes, targets, weights)
         result_patbas = patbas_objective.calc_ders_range(approxes, targets, weights)

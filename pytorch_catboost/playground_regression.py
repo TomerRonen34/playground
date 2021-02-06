@@ -1,4 +1,5 @@
 import pickle
+from typing import Dict
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -104,6 +105,10 @@ def plot_results(results_path: Path):
     with open(results_path, 'rb') as f:
         results = pickle.load(f)
 
+    plot_results_dict(results)
+
+
+def plot_results_dict(results: Dict):
     y_test = results["y_test"]
 
     all_rel_diff = [

@@ -9,6 +9,17 @@ from torch import Tensor
 from pytorch_catboost.custom_pytorch_objective import CustomPytorchObjective
 
 
+def very_custom_regression_loss(preds: Tensor, targets: Tensor, n: int = 4) -> Tensor:
+    raw_diff = preds - targets
+    is_undershoot = raw_diff < 0
+    loss = torch.zeros_like(raw_diff)
+    a = (1 / n) ** (1 / (n - 1))
+    loss[is_undershoot] = torch.abs(raw_diff[is_undershoot] - a) ** n - a ** n
+    loss[~is_undershoot] = torch.abs(raw_diff[~is_undershoot])
+    loss = loss.sum()
+    return loss
+
+
 def custom_regression_loss(preds: Tensor, targets: Tensor) -> Tensor:
     """ penalize undershooting much more than overshooting """
     raw_diff = preds - targets

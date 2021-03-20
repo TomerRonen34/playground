@@ -10,7 +10,6 @@ from geopandas.testing import assert_geodataframe_equal
 from geopandas import GeoDataFrame
 
 from spatial_intersection.merge_by_intersection import merge_gdfs_by_biggest_intersection
-from spatial_intersection.utils import plot_geometry
 
 
 class TestMergeByIntersection:
@@ -27,7 +26,7 @@ class TestMergeByIntersection:
         geometries_gdf = cls._generate_geometries_gdf()
         regions_gdf = cls._generate_regions_gdf()
         expected_index_matches, expected_gdf = cls._generate_expected_results(geometries_gdf, regions_gdf)
-        cls._try_plot_geometries(geometries_gdf, regions_gdf)
+        cls._vis_geometries_as_html(geometries_gdf, regions_gdf)
         return geometries_gdf, regions_gdf, expected_index_matches, expected_gdf
 
     @staticmethod
@@ -72,10 +71,9 @@ class TestMergeByIntersection:
         return expected_index_matches, expected_gdf
 
     @staticmethod
-    def _try_plot_geometries(geometries_gdf: GeoDataFrame, regions_gdf: GeoDataFrame) -> None:
+    def _vis_geometries_as_html(geometries_gdf: GeoDataFrame, regions_gdf: GeoDataFrame) -> None:
         to_vis = GeometryCollection([Point(0, 0), *regions_gdf.geometry.tolist(),
                                      *geometries_gdf.geometry.tolist()])
-        try:
-            plot_geometry(to_vis)
-        except:
-            pass
+        svg = to_vis._repr_svg_()
+        with open("vis_test_geometries.html", 'w') as f:
+            f.write(svg)

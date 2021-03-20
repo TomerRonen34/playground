@@ -8,6 +8,11 @@ from shapely.geometry import GeometryCollection
 
 def merge_gdfs_by_biggest_intersection(left_gdf: GeoDataFrame, right_gdf: GeoDataFrame) -> GeoDataFrame:
     """
+    For every row in left_gdf, concatenates the row of right_gdf which has the biggest intersection with it.
+    Also adds an "index_right" column to document which row of right_gdf was chosen.
+
+    Geometries in left_gdf that have no intersections in right_gdf are concatenated with NaN values,
+    as in pd.merge(left_df, right_df, how="left").
     """
     sjoined_geometries = _sjoin_geometries(left_gdf, right_gdf)
     sjoined_geometries["intersection_area"] = _calculate_intersection_area(sjoined_geometries)

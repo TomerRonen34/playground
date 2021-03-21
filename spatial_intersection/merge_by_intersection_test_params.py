@@ -1,4 +1,3 @@
-import re
 from typing import Tuple
 
 import geopandas as gpd
@@ -7,6 +6,8 @@ import pandas as pd
 from geopandas import GeoDataFrame
 from pandas import Series
 from shapely.geometry import Polygon, GeometryCollection, Point
+
+from spatial_intersection.utils import vis_geometries_as_html
 
 
 class TestParams:
@@ -79,8 +80,4 @@ class TestParams:
     def _vis_geometries_as_html(geometries_gdf: GeoDataFrame, regions_gdf: GeoDataFrame) -> None:
         to_vis = GeometryCollection([Point(0, 0), *regions_gdf.geometry.tolist(),
                                      *geometries_gdf.geometry.tolist()])
-        svg_string = to_vis._repr_svg_()
-        svg_string = re.sub(r'width="\d+\.?\d*"', 'width="800"', svg_string, count=1)
-        svg_string = re.sub(r'height="\d+\.?\d*"', 'height="700"', svg_string, count=1)
-        with open("vis_test_geometries.html", 'w') as f:
-            f.write(svg_string)
+        vis_geometries_as_html(to_vis, "vis_test_geometries.html")
